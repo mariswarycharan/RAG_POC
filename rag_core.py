@@ -73,6 +73,25 @@ RERANK_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2"  # cross-encoder, ~90 MB
 # needs ~1.1 GB of RAM, so it will OOM the free Community Cloud tier - use it
 # only when self-hosting. See SETUP.md.
 
+# How many query-passage pairs the cross-encoder scores per forward pass.
+# fastembed defaults to 64, which sent one session to 1.9 GB and got the app
+# killed on Community Cloud after a handful of queries: onnxruntime sizes its
+# workspace for the largest batch shape it has seen and never gives it back.
+#
+# Passages here vary from a few words to 180, and a batch pads every pair to
+# the longest one in it, so large batches also waste compute. Measured over
+# eight queries on this corpus, smaller is both lighter and faster:
+#
+#     batch  peak RSS  rerank cost  ms/query
+#         1    387 MB        65 MB       926
+#         4    562 MB       241 MB      1240
+#        16   1262 MB       941 MB      1542
+#        32   1937 MB      1617 MB      1625
+#
+# There is no trade-off to balance, so this is 1. Raise it only if you switch
+# to a corpus with uniform passage lengths and can re-measure both columns.
+RERANK_BATCH_SIZE = 1
+
 # --- Passage windowing ------------------------------------------------------
 PASSAGE_WORDS = 180
 PASSAGE_OVERLAP = 45
@@ -643,7 +662,10 @@ class RagEngine:
             docs = [self.passage_by_id[pid].text for pid in shortlist]
             logits = {
                 pid: float(s)
-                for pid, s in zip(shortlist, self.reranker.rerank(query, docs))
+                for pid, s in zip(
+                    shortlist,
+                    self.reranker.rerank(query, docs, batch_size=RERANK_BATCH_SIZE),
+                )
             }
             rerank_scores = {
                 pid: _sigmoid(v, RERANK_TEMPERATURE) for pid, v in logits.items()

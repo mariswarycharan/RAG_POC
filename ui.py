@@ -8,20 +8,25 @@ own its own scrolling and typography.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import html
-import mimetypes
 import re
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Where image paths from the dataset are resolved from, in priority order.
-IMAGE_ROOTS = [PROJECT_ROOT, PROJECT_ROOT / "dataset", PROJECT_ROOT / "assets"]
+# Streamlit serves ./static at the URL prefix below when
+# server.enableStaticServing is on. Figures are referenced by URL from there
+# rather than base64-inlined into the page: inlining 13 MB of PNGs produced
+# multi-megabyte HTML on every rerun, which is what pushed the app over the
+# Community Cloud memory limit after a handful of queries.
+STATIC_DIR = PROJECT_ROOT / "static"
+STATIC_URL = "app/static"
+
+# Image paths from the dataset are resolved against these, in order.
+IMAGE_ROOTS = [STATIC_DIR, PROJECT_ROOT, PROJECT_ROOT / "dataset", PROJECT_ROOT / "assets"]
 
 MAX_IMAGES_PER_CHUNK = 12
-MAX_IMAGE_BYTES = 3_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -704,14 +709,20 @@ def resolve_image(local_path: str):
     return None
 
 
-def _data_uri(path: Path):
-    try:
-        if path.stat().st_size > MAX_IMAGE_BYTES:
-            return None
-        mime = mimetypes.guess_type(path.name)[0] or "image/png"
-        return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
-    except Exception:
+def image_url(path: Path):
+    """URL for a resolved image, or None if it is not under static/.
+
+    Only files Streamlit can serve get a URL. Everything else degrades to a
+    placeholder - deliberately, because the alternative (base64-inlining it)
+    is what blew the memory budget.
+    """
+    if path is None:
         return None
+    try:
+        rel = path.resolve().relative_to(STATIC_DIR.resolve())
+    except (ValueError, OSError):
+        return None
+    return f"{STATIC_URL}/{rel.as_posix()}"
 
 
 def images_to_html(images, scope: str = "") -> str:
@@ -733,22 +744,23 @@ def images_to_html(images, scope: str = "") -> str:
             f'<div class="lab">Image {n} '
             f"<span>&middot; page {esc(page)} &middot; {esc(kind)}</span></div>"
         )
-        path = resolve_image(local)
-        uri = _data_uri(path) if path else None
-        if uri:
+        url = image_url(resolve_image(local))
+        if url:
             uid = "lb" + hashlib.md5(f"{scope}|{local}|{n}".encode()).hexdigest()[:10]
             caption = f"Image {n} - page {page} - {kind} - {Path(local).name}"
             body = (
                 f'<input class="lb-cb" type="checkbox" id="{uid}">'
                 f'<label class="lb-open" for="{uid}" data-cap="{esc(caption)}">'
                 f'<span class="shot">'
-                f'<img src="{uri}" alt="Image {n} from page {esc(page)}" loading="lazy">'
+                # No loading="lazy": before it loads the img is a 0x0 box, so the
+                # intersection check never fires and it stays blank.
+                f'<img src="{esc(url)}" alt="Image {n} from page {esc(page)}">'
                 f"</span></label>"
             )
         else:
             body = (
                 f'<div class="img-miss"><span class="ic">&#128443;</span>'
-                f'<span class="t">Not bundled with this repo</span>'
+                f'<span class="t">Not served from static/</span>'
                 f'<span class="f">{esc(Path(local).name)}</span></div>'
             )
         cards.append(

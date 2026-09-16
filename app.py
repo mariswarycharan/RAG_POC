@@ -295,6 +295,31 @@ def run_query(query: str):
     st.session_state.messages.append({"role": "user", "text": query})
     st.session_state.messages.append({"role": "assistant", "result": idx})
     st.session_state.viewing = idx
+    trim_history()
+
+
+# A session keeps every past result so you can flip between reports. Cap it so
+# a long session cannot grow without bound.
+MAX_KEPT_RESULTS = 15
+
+
+def trim_history():
+    """Drop the oldest searches once the session exceeds the cap."""
+    drop = len(st.session_state.results) - MAX_KEPT_RESULTS
+    if drop <= 0:
+        return
+    st.session_state.results = st.session_state.results[drop:]
+    kept = []
+    for msg in st.session_state.messages:
+        if msg["role"] == "assistant":
+            if msg["result"] < drop:
+                if kept and kept[-1]["role"] == "user":
+                    kept.pop()          # drop its question too
+                continue
+            msg = {"role": "assistant", "result": msg["result"] - drop}
+        kept.append(msg)
+    st.session_state.messages = kept
+    st.session_state.viewing = len(st.session_state.results) - 1
 
 
 # The report renders first so it owns the top of the page, but the chat has to

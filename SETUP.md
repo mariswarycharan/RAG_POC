@@ -75,8 +75,8 @@ plan.
 - `app.py`, `rag_core.py`, `ui.py`
 - `requirements.txt`
 - everything in `dataset/` you want available in the deployed app
-- `extracted_images/`, if your corpus references figures
-- `.streamlit/config.toml`
+- `static/`, if your corpus references figures
+- `.streamlit/config.toml` (it turns on static file serving)
 
 `.chroma/` is gitignored on purpose. The cloud container rebuilds it on first
 boot; committing it would just ship a stale index.
@@ -105,7 +105,7 @@ Every push to `main` redeploys automatically.
 
 | Limit | Value | What it means here |
 |---|---|---|
-| Memory | ~1 GB | The app peaks near 500–600 MB. That headroom is why it uses ONNX models instead of torch. |
+| Memory | ~1 GB | Measured ~410 MB after 10 queries in one session. Two things keep it there: ONNX models instead of torch, and `RERANK_BATCH_SIZE` (see Tuning). |
 | Private apps | 1 | Public apps are unlimited. |
 | Sleep | after ~7 days idle | Anyone can wake it; the next visitor waits for the rebuild. |
 | Disk | ephemeral | `.chroma/` is rebuilt after every restart. Fine — it takes seconds. |
@@ -121,6 +121,14 @@ without them the deploy fails with
 **Torch.** Nothing in the dependency tree pulls it. If you add a library that
 does, the install will likely blow the free tier's memory and disk.
 
+**Reranker batch size.** `RERANK_BATCH_SIZE = 1` in `rag_core.py`. fastembed's
+default of 64 made onnxruntime reserve a workspace sized for the largest batch
+it had seen and never release it — a session climbed past 1.9 GB and got
+killed after five or six queries. Don't raise it without re-measuring.
+
+**Images.** They are served as URLs from `static/`, not base64-inlined. See
+below; inlining them put 22 MB of HTML on the wire across five queries.
+
 ---
 
 ## 4. Figures
@@ -131,21 +139,20 @@ A corpus points at images by relative path, e.g.
 extracted_images/POLIVY_GLOBAL_BRAND_BOOK_Q1_2026_1/p014/pymupdf_vector_render_ba447c625c.png
 ```
 
-`extracted_images/` is committed (about 13 MB), so the bundled corpus renders
-all of its figures inline. For a new corpus, copy its image folder into the
-project root so paths resolve as `<project root>/<local_path>`, and commit it.
-Anything missing degrades to a labelled placeholder instead of breaking.
+Images live under **`static/`** and are served by URL, because
+`server.enableStaticServing` is on in `.streamlit/config.toml`. Streamlit
+exposes that folder at `app/static/...`, so a `local_path` of
+`extracted_images/x.png` must exist at `static/extracted_images/x.png`.
 
-`ui.py` also looks under `dataset/` and `assets/`, so any of these work:
+`static/extracted_images/` is committed (about 13 MB), so the bundled corpus
+renders all 72 of its figures. For a new corpus, drop its image folder inside
+`static/` and commit it.
 
-```
-<root>/extracted_images/...
-<root>/dataset/extracted_images/...
-<root>/assets/extracted_images/...
-```
-
-Images are inlined as base64 data URIs. Two caps in `ui.py` keep pages light:
-`MAX_IMAGES_PER_CHUNK` (12) and `MAX_IMAGE_BYTES` (3 MB per file).
+**Only files under `static/` are rendered.** Anything else degrades to a
+labelled placeholder — deliberately. Images used to be base64-inlined into the
+page, which produced 22 MB of HTML across five queries, regenerated on every
+rerun, and was the first thing to push the app over its memory limit.
+`MAX_IMAGES_PER_CHUNK` (12) in `ui.py` still caps how many render per chunk.
 
 **Before committing images, check the total repo size.** GitHub warns above
 1 GB and Community Cloud clones the whole repo on every build.
@@ -180,9 +187,10 @@ All in `rag_core.py`:
 | `RERANK_TEMPERATURE` | 3.0 | lower = more extreme 0/1 scores |
 | `W_RERANK` / `W_DENSE` / `W_COVERAGE` | .60 / .25 / .15 | relevance blend; must sum to 1.0 |
 | `SUBSTANCE_FLOOR` / `SUBSTANCE_FULL_AT` | 0.40 / 40 | how hard near-empty sections are penalised |
+| `RERANK_BATCH_SIZE` | 1 | query-passage pairs per forward pass. **The main memory control.** Larger is both heavier and slower here — the comment above it has the measurements |
 
-Top-K, candidate pool size, minimum relevance, BM25 on/off, reranking on/off
-and the fusion weight are all live in the app's right-hand control panel.
+Top-K and minimum relevance are live in the sidebar. The candidate pool,
+hybrid retrieval and reranking are always on.
 
 ### Use a different dataset
 
@@ -210,8 +218,12 @@ python verify_datasets.py
 `pysqlite3-binary` line is missing from `requirements.txt`, or the shim at the
 top of `rag_core.py` was moved below the `chromadb` import. It must run first.
 
-**App crashes or restarts on Community Cloud** — almost always memory. Check
-you haven't switched to `BAAI/bge-reranker-base` or pulled in torch.
+**"This app has gone over its resource limits"** — memory. In order of
+likelihood: `RERANK_BATCH_SIZE` was raised, images were moved out of `static/`
+back into base64, `RERANK_MODEL` was switched to `BAAI/bge-reranker-base`, or
+something pulled torch in. To see where it goes, run the engine outside
+Streamlit and print `psutil.Process().memory_info().rss` after each search —
+the reranker is the only step that should move it.
 
 **First load times out** — reload the page. The models are downloading; the
 second attempt hits a warm cache.

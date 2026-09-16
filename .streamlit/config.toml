@@ -6,5 +6,10 @@ secondaryBackgroundColor = "#F5F8FC"
 textColor = "#16202C"
 font = "sans serif"
 
+[server]
+# Serves ./static at /app/static. Images are referenced by URL instead of
+# being base64-inlined, which is what kept the app inside its memory limit.
+enableStaticServing = true
+
 [browser]
 gatherUsageStats = false

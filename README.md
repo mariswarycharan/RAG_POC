@@ -103,6 +103,11 @@ term coverage, latency, passages scored — sit at the top of the report.
 | Lexical | `rank-bm25` | pure Python, no index server |
 | Runtime | `fastembed` → onnxruntime | **no torch**, which is what keeps the app inside the 1 GB free-tier budget |
 
+Measured footprint: **~410 MB after 10 queries** in one session. Two settings
+do most of that work — images served from `static/` rather than base64, and
+`RERANK_BATCH_SIZE = 1`. Both are explained in [SETUP.md](SETUP.md#5-tuning);
+raising either will put the app back over the free tier's limit.
+
 ## Layout
 
 | File | Role |
@@ -111,6 +116,7 @@ term coverage, latency, passages scored — sit at the top of the report.
 | `rag_core.py` | loading, passage windowing, Chroma index, retrieval, scoring |
 | `ui.py` | theme CSS and the HTML for a rendered chunk |
 | `dataset/*.jsonl` | your corpora - every file here shows up in the app |
+| `static/` | figures, served by URL at `app/static/...` |
 | `verify_datasets.py` | proves the pipeline works on unfamiliar schemas |
 | `SETUP.md` | local setup and Streamlit Community Cloud deployment |
 
@@ -128,11 +134,12 @@ Full instructions, including free-tier deployment, are in [SETUP.md](SETUP.md).
 
 ## Figures
 
-A corpus can reference extracted images by relative path
-(`extracted_images/<doc>/<page>/<file>.png`), resolved against the project
-root (also `dataset/` and `assets/`). The bundled corpus ships its
-`extracted_images/` folder, so all 72 of its figures render inline, each
-labelled with its page number, classification and source path.
+Images live under `static/`, which Streamlit serves at `app/static/...`, and
+are referenced by URL. A `local_path` of `extracted_images/x.png` in the JSONL
+resolves to `static/extracted_images/x.png`. The bundled corpus ships all 72
+of its figures, each labelled with its page, classification and source path,
+and each opens full screen on click.
 
-Any image a corpus references but does not ship falls back to a labelled
-placeholder rather than breaking the card — see SETUP.md.
+Anything not under `static/` degrades to a labelled placeholder. That is
+deliberate: base64-inlining images instead produced 22 MB of HTML across five
+queries and was enough on its own to exhaust the free tier. See SETUP.md.
